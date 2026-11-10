@@ -168,11 +168,14 @@ class Crawler:
 
     # ---------- HTTP ----------
     def _get(self, url: str) -> requests.Response:
+        return self._request("GET", url)
+
+    def _request(self, method: str, url: str, **kw) -> requests.Response:
         wait = self._last_request + self.delay - time.monotonic()
         if wait > 0:
             time.sleep(wait)
         self._last_request = time.monotonic()
-        resp = self.session.get(url, timeout=60, allow_redirects=True)
+        resp = self.session.request(method, url, timeout=60, allow_redirects=True, **kw)
         if looks_blocked(resp.status_code, {k.lower(): v for k, v in resp.headers.items()}, resp.content):
             raise BlockedError(
                 f"HTTP {resp.status_code} from {url} looks like a block/challenge/rate-limit. "
@@ -216,7 +219,7 @@ class Crawler:
                 return p
         return None
 
-    def _record(self, url, kind, path, resp, found_on, text, depth):
+    def _record(self, url, kind, path, resp, found_on="", text="", depth=""):
         body = path.read_bytes()
         self.manifest[url] = {
             "url": url, "kind": kind,
