@@ -1,0 +1,4 @@
+url,kind,local_path,http_status,content_type,bytes,sha256,found_on,link_text,depth,retrieved_on
+https://www.chicagoelections.gov/elections/results,page,pages/elections_results__a491c5031f.html,200,text/html; charset=utf-8,85281,d935854936af47f40c631cc615e0e9a7bc5e82c7b68d0227efed3d07174941d1,,,0,2026-11-10
+https://www.chicagoelections.gov/elections/results/41,page,pages/elections_results_41__beca932e43.html,200,text/html; charset=utf-8,60764,f531ea25e8375aec3f56517cc50f293ffe92c1cd351af440fa39d9dd23301940,https://www.chicagoelections.gov/elections/results,2024 General Election - 11/5/2024,1,2026-11-10
+https://www.chicagoelections.gov/elections/results/42,page,pages/elections_results_42__d3cbf80866.html,200,text/html; charset=utf-8,63430,78d8d47d18b4610f8639ec7e9d1a5114cabfca1faeaee087cb2d94688eb91bd4,https://www.chicagoelections.gov/elections/results,2026 General Election - 11/3/2026,1,2026-11-10
