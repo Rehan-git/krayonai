@@ -120,6 +120,7 @@ class Drupal(BaseHTTPRequestHandler):
 @pytest.fixture
 def site(monkeypatch):
     monkeypatch.setattr(extract, "MIN_DELAY", 0.0)
+    monkeypatch.setattr(extract, "RETRY_WAIT", 0.0)
     Drupal.posts, Drupal.builds = [], 0
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Drupal)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -152,7 +153,7 @@ def test_probe_replays_form_and_saves_everything(site, tmp_path):
 
     d = tmp_path / "probe"
     assert (d / "gov_all__3_submit.json").exists() and (d / "gov_w01__2_ward.json").exists()
-    assert any(p.name.startswith("gov_w01__export_") for p in d.iterdir())
+    assert not any("__export_" in p.name for p in d.iterdir())   # listed, not fetched
     assert any(p.name.endswith(".pdf") and p.name.startswith("proclamation_2024g") for p in d.iterdir())
     sched = [p.name for p in d.iterdir() if p.name.startswith("precinct_schedules__")]
     assert any("sb_subdistricts" in n for n in sched) and not any("congress" in n for n in sched)
@@ -186,3 +187,36 @@ def test_wrapper_fragment_without_form_tag_still_updates_options(site, tmp_path,
     monkeypatch.setattr(Drupal, "do_POST", fragment_only)
     out = make(site, tmp_path, [Case("frag", "42", "12", "")]).run().read_text()
     assert "ward options after contest change: 51" in out
+
+
+def test_error_page_not_saved_and_retried_once(site, tmp_path, monkeypatch):
+    calls = []
+    orig_get = Drupal.do_GET
+
+    def flaky(self):
+        if self.path.startswith("/elections/results/41"):
+            calls.append(self.path)
+            return self._send(502, "text/html", "<title>502: Bad gateway</title> Your IP: 2001:db8::1")
+        return orig_get(self)
+    monkeypatch.setattr(Drupal, "do_GET", flaky)
+    out = make(site, tmp_path, [Case("sb", "41", "110", "")]).run().read_text()
+    assert len(calls) == 2                                  # one retry, then give up
+    assert "STOPPED" in out and "HTTP 502" in out
+    saved = [p for p in (tmp_path / "probe").iterdir() if p.name.startswith("sb__")]
+    assert saved == []
+    for p in tmp_path.rglob("*"):
+        if p.is_file():
+            assert "2001:db8" not in p.read_text(errors="ignore")
+
+
+def test_media_served_directly_as_pdf_gets_pdf_suffix(site, tmp_path, monkeypatch):
+    orig_get = Drupal.do_GET
+
+    def direct(self):
+        if self.path == "/media/1337":
+            return self._send(200, "application/pdf", b"%PDF-1.4 direct")
+        return orig_get(self)
+    monkeypatch.setattr(Drupal, "do_GET", direct)
+    make(site, tmp_path, []).run()
+    assert any(p.name.startswith("proclamation_2024g") and p.suffix == ".pdf"
+               for p in (tmp_path / "probe").iterdir())

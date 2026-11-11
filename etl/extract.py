@@ -41,6 +41,8 @@ USER_AGENT = (
     "polite crawler: robots.txt, {delay}s delay, cached)"
 )
 MIN_DELAY = 2.0
+RETRY_STATUSES = (500, 502, 504)
+RETRY_WAIT = 30.0
 MANIFEST_FIELDS = [
     "url", "kind", "local_path", "http_status", "content_type", "bytes",
     "sha256", "found_on", "link_text", "depth", "retrieved_on",
@@ -134,6 +136,8 @@ def _suffix_for(content_type: str) -> str:
         return ".xls"
     if "csv" in ct:
         return ".csv"
+    if "pdf" in ct:
+        return ".pdf"
     if "html" in ct:
         return ".html"
     return ".bin"
@@ -176,6 +180,12 @@ class Crawler:
             time.sleep(wait)
         self._last_request = time.monotonic()
         resp = self.session.request(method, url, timeout=60, allow_redirects=True, **kw)
+        if resp.status_code in RETRY_STATUSES:
+            # Server-side hiccup (the board's site returned 502s under load): one slow retry.
+            self.log(f"  HTTP {resp.status_code} from {url}; retrying once in {RETRY_WAIT:.0f}s")
+            time.sleep(RETRY_WAIT)
+            self._last_request = time.monotonic()
+            resp = self.session.request(method, url, timeout=60, allow_redirects=True, **kw)
         if looks_blocked(resp.status_code, {k.lower(): v for k, v in resp.headers.items()}, resp.content):
             raise BlockedError(
                 f"HTTP {resp.status_code} from {url} looks like a block/challenge/rate-limit. "

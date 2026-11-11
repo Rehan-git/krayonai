@@ -1,46 +1,104 @@
 # Phase 1 report: chicagoelections.gov results source
 
-Based on the discovery fetch of 2026-11-10 (commit bff7b60): the results
-index plus the election pages for 2024g and 2026g. These pages contain no
-results data, so a few questions stay open until the probe in "Next fetch"
-runs.
+Based on the discovery fetch (commit bff7b60) and the first probe (commit
+cff3805, run 2026-11-10). Every figure checked below was compared within
+the board's own published data; nothing was estimated.
 
 ## Access
 - The site is behind Cloudflare and blocks cloud/data-center IPs, so all
   fetching has to run from a normal connection (your computer).
-- robots.txt is a standard Drupal file and does not disallow any results
-  paths, including the POST endpoint below.
+- robots.txt is a standard Drupal file and disallows no results paths.
+- During the probe the site returned **502 Bad gateway** twice (the 2024
+  page GET and a ward-level POST). The fetcher now retries once after 30s
+  and never saves error pages, because Cloudflare error pages print the
+  visitor's IP address.
 
 ## Where the precinct data lives
-There are no static per-contest files (no XLS/CSV links anywhere on these
-pages), which is why the fetch found 0 files. Results come from a Drupal
-form on each election page:
+There are no static result files. Each contest comes from one AJAX request
+on its election page:
 
 | Element | Value |
 |---|---|
-| Election page | `/elections/results/{page_id}`: **2026g = 42**, **2024g = 41** (not in date order; the 2026 primaries are 76-78) |
-| Form | `election_results_form`, hidden fields `election_id`, `form_build_id` (changes on every page load), `form_id` |
-| Dropdowns | `contest`, `ward`, `precinct` (ward and precinct show only "ALL" until a contest is chosen) |
-| AJAX endpoint | `POST /elections/results/{page_id}?ajax_form=1` |
-| Contest change | `_triggering_element_name=contest` → `::ajaxRebuildPage` (fills the ward/precinct lists) |
-| Submit | `_triggering_element_name=submit`, `_triggering_element_value=Submit` → `::displayElectionResults` |
-| Response | Drupal AJAX command JSON with an HTML results fragment (expected; not yet seen) |
+| Election page | `/elections/results/{page_id}`: **2026g = 42**, **2024g = 41** |
+| Endpoint | `POST /elections/results/{page_id}?ajax_form=1` |
+| Steps | GET the page (for `form_build_id`), POST a contest change, POST submit with ward = ALL |
+| Response | Drupal AJAX JSON; an `openDialog` command holds the results HTML (about 1.3 MB for Governor) |
 
-**Turnout**: contest value `''` (blank) = "Registered Voters/Ballots/Turnout",
-in both elections. So registered voters and ballots cast are published, and
-probably per precinct.
+**Ward = ALL returns every precinct**, so the full run needs about 3
+requests per contest (about 105 for the 35 contests; roughly 12 minutes at
+6s spacing). Per-ward requests are not needed.
 
-**Ward summary (QA 7)**: probably the same form with ward = ALL; to be
-confirmed by the probe.
+### Results HTML layout
+- Table 0: citywide totals.
+- Then 50 tables, each after a "Ward N" heading (N = 1 … 50, no padding).
+- Each ward table has one row per precinct, numbered 1 … n within the ward
+  (sequential in every ward), plus a final "Total" row.
+- Turnout contest columns: Precinct, Registered Voters, Ballots Cast,
+  Turnout.
+- Candidate contest columns: Precinct, "Total Voters" (actually the total
+  votes in the contest), then a vote count and a % column for each
+  candidate.
+- Candidate names are shown as the ballot shows them. Governor is a ticket
+  ("JB Pritzker & Christian Mitchell").
+- **No party labels** in the 2026 results.
+- **No "unofficial" or "last updated" label** anywhere, so result_status
+  comes from the CLI flag as planned.
+- The "Download Data in Excel." link returned an HTML page saying "Cannot
+  generate xls download." It is not used.
 
-**Citywide totals (QA 8)**:
-- 2024g: certified *Proclamation of Official Results (November 5, 2024).pdf*
-  at `/media/1337`.
-- 2026g: no proclamation yet (results are unofficial). Until one is posted,
-  the only citywide totals are the results form's own totals, so check 8 for
-  2026g is close to a self-check.
+### Checks on the probe data (2026g)
+| Check | Result |
+|---|---|
+| Precincts | 1,291 in 50 wards (15 to 40 per ward); identical list in turnout and Governor |
+| Turnout: precincts → ward totals → citywide | exact match (1,570,238 registered, 740,216 ballots) |
+| Registered voters > 0 and ballots ≤ registered, every precinct | pass |
+| Governor: each precinct's candidate votes sum to its "Total Voters" | pass |
+| Governor: precincts → ward totals → citywide, all 11 candidates | exact match (732,964 votes) |
+| Governor votes ≤ ballots cast, every precinct | pass |
 
-## Race mapping (contest values are per election, not stable across elections)
+## Write-ins
+Named write-in candidates are reported **per precinct**, labeled "(Write-in)".
+Governor has 3 ballot candidates and 8 write-ins, most with 0 votes. So
+under the spec they become candidate rows, flagged in QA.
+
+Row volume: Governor alone is **14,201 rows** (1,291 × 11), or **4,003** if
+write-in rows with 0 votes are left out. Across all races this will exceed
+the 25,000 rows `Precinct_Results` has. **Decision needed** (see below).
+
+## 2024 proclamation (`/media/1337`, 21-page PDF, certified)
+"Tabulated Statement of the Returns and Proclamation of the Results", Nov
+5, 2024. It contains:
+- Ballots cast by district: citywide 1,018,359; each ward; each Board of
+  Education district (e.g. District 1: 117,241).
+- Precincts per district: city 1,291; ward counts; Board of Education
+  District 1 … 10 = 151, 125, 130, 135, 141, 145, 104, 153, 172, 153.
+- Candidate totals per contest, with **party prefixes** ("DEM - ",
+  "NON - "). It is a two-column page layout, so the parser must split the
+  columns.
+
+That gives QA 8 its citywide totals for 2024g, QA 9 its expected precinct
+count per district, and candidates_draft its party labels for 2024g.
+
+## Split precincts (affects school board races)
+The district precinct counts add up to 1,409 against 1,291 precincts,
+because some precincts are split between districts. The 2026 schedule PDF
+("District Schedule Chicago Elected School Board 2026", current as of
+2026-02-09) lists each subdistrict's precincts by ward and marks splits
+"(pt)". For example, 1A has 72 whole and 7 split precincts.
+
+Consequences:
+- A precinct can have results in two school board races. result_id stays
+  unique, since it includes race_id.
+- QA 5 (votes ≤ ballots) still holds per race, because each part's votes
+  are part of the precinct's ballots.
+- QA 9 coverage for 2026g uses the schedule (whole and part precincts).
+  For 2024g it uses the proclamation's precinct counts. A 2024 precinct
+  list per district isn't on the schedules page (only the 2026 school
+  board schedule is linked).
+- Still unseen: whether the results label split precincts ("17" or
+  "17(pt)"). The next probe includes 2026 subdistrict 1A to find out.
+
+## Race mapping (contest values per election page)
 
 | race_id | page | contest value | Source label |
 |---|---|---|---|
@@ -48,46 +106,28 @@ confirmed by the probe.
 | 2026g-GOV | 42 | 12 | Governor & Lieutenant Governor, Illinois |
 | 2026g-SOS | 42 | 14 | Secretary of State, State of Illinois |
 | 2026g-SBPRES | 42 | 121 | President, Board of Education |
-| 2026g-SB01A … 2026g-SB10B | 42 | 122 … 141 (1A=122, 1B=123, … 10B=141, in order) | Member, Board of Education, Subdistrict 1A … 10B |
+| 2026g-SB01A … 2026g-SB10B | 42 | 122 … 141 (1A=122, 1B=123, … 10B=141) | Member, Board of Education, Subdistrict 1A … 10B |
 | (turnout) | 41 | `''` | Registered Voters/Ballots/Turnout |
 | 2024g-SB01 … 2024g-SB10 | 41 | 110 … 119 | Member of the Chicago Board of Education, 1st … 10th District |
 
-All 34 race_ids map one-to-one; no contest is ambiguous. Things that complicate the mapping:
-- Contest values get reused across elections (110 is the 2024 SB 1st
-  District but a 2026 judgeship), so the mapping must be keyed by
-  (page_id, contest value), and each run should check that the label still
-  matches before parsing.
-- The Governor contest is a joint ticket, so candidate_name will be a
-  Governor/Lt. Governor pair as the source shows it.
-- School board races cover only part of the city. QA 9 (coverage) needs an
-  independent list of precincts per sub-district/district. The site links
-  `/districts-maps/district-precinct-schedules`, which is likely the source;
-  not fetched yet.
-- The 2026 contest list also includes judicial retention names (142-202) and
-  referenda, some precinct-specific (labels like "W07 P14"). That is the
-  first sign of the source's precinct labeling; all of these are out of
-  scope.
-- Neither page shows an "Unofficial" or "last updated" label, so
-  result_status comes from the CLI flag as planned. The probe will check
-  whether the results fragment carries a timestamp.
+Contest values are reused across elections, so the mapping is keyed by
+(page, contest), and each run checks the label before parsing.
 
-## Still unknown (needs the probe)
-1. Whether ward = ALL returns precinct rows or only ward totals (this decides
-   between about 70 requests and about 1,800).
-2. Precinct/ward labels in the results table.
-3. Whether write-ins are reported per precinct.
-4. Whether the results fragment links a download (XLS/CSV) of its own.
-5. Whether a session cookie is needed for the POST to work.
+## Still open
+1. 2024g results (the page returned a 502) and how split precincts are
+   labeled: the rerun probe covers 2024g SB 1st District and 2026g SB 1A.
+2. Party labels for 2026g Governor and SOS candidates: not in the results.
+   See decisions.
+3. Ballot order for candidate_id NN: the results list candidates in a fixed
+   column order, but nothing on the page says it is ballot order.
 
-## Next fetch
-1. **Probe, about 10 requests**: for page 42, contest `''` (turnout) and
-   contest 12 (Governor), with ward = ALL and with ward = 1. Each case is a
-   GET of the election page (for a fresh `form_build_id`), then the
-   contest-change POST, then the submit POST. Save every raw response under
-   `data/raw/_discovery/probe/`.
-2. **Fetch the 2024 proclamation PDF** (`/media/1337`), and add `/media` and
-   `.pdf` to the fetcher's scope.
-3. **Fetch the district-precinct schedules page** for QA 9.
-4. After reviewing the probe: the full contest loop for the 35 contests
-   above (24 for 2026g, 11 for 2024g), cached under
-   `data/raw/{election_id}/`, at the same 4s delay.
+## Decisions needed
+- **Write-in rows**: (a) keep all, including 0-vote rows (about 14k rows
+  for Governor alone; the Sheet must grow), or (b) keep write-in rows only
+  where votes > 0, with ballot candidates kept at every precinct even when
+  0. Recommended: (b). It loses nothing, since a missing write-in row means
+  0, and QA can confirm the totals.
+- **2026g party labels**: leave party blank for GOV/SOS until the 2026
+  proclamation is certified, or name another official source.
+- **Ballot order**: accept the board's column order as NN, or provide the
+  specimen ballot.

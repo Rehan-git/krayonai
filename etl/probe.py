@@ -34,12 +34,14 @@ class Case:
     ward: str             # '' = ALL; otherwise the ward option's visible text, e.g. '1'
 
 
+# Ward = ALL already returns every precinct (one table per ward), so per-ward
+# cases were dropped after the first probe. The SB cases show how split
+# precincts ("17(pt)" in the district schedule) appear in results.
 DEFAULT_CASES = [
     Case("2026g_turnout_allwards", "42", "", ""),
-    Case("2026g_turnout_ward01", "42", "", "1"),
     Case("2026g_gov_allwards", "42", "12", ""),
-    Case("2026g_gov_ward01", "42", "12", "1"),
     Case("2024g_sb01_allwards", "41", "110", ""),
+    Case("2026g_sb01a_allwards", "42", "122", ""),
 ]
 PROCLAMATION_2024G = BASE_URL + "/media/1337"
 SCHEDULES_URL = BASE_URL + "/districts-maps/district-precinct-schedules"
@@ -161,6 +163,9 @@ class Prober:
 
         self.log(f"[probe] {case.label}: GET {page_url}")
         resp = self.c._get(page_url)
+        if not resp.ok:
+            # Error pages are not saved: Cloudflare's include the visitor's IP address.
+            raise ProbeError(f"page GET returned HTTP {resp.status_code} (cf-ray {resp.headers.get('cf-ray', '?')})")
         self._save(f"{page_url}#{case.label}/page", f"{case.label}__0_page.html", resp, "probe-page")
         page = resp.text
         form = parse_form(page)
@@ -184,11 +189,11 @@ class Prober:
             r = self.c._request("POST", ajax_url, data=data, headers={
                 "X-Requested-With": "XMLHttpRequest", "Accept": "application/json, text/javascript, */*; q=0.01",
                 "Referer": page_url, "Origin": BASE_URL})
+            if not r.ok:
+                raise ProbeError(f"{step} POST returned HTTP {r.status_code} (cf-ray {r.headers.get('cf-ray', '?')})")
             n = {"contest": 1, "ward": 2, "submit": 3}[step]
             self._save(f"{ajax_url}#{case.label}/{step}", f"{case.label}__{n}_{step}.json", r, "probe-ajax",
                        found_on=page_url)
-            if not r.ok:
-                raise ProbeError(f"{case.label}: {step} POST returned HTTP {r.status_code}")
             res = parse_ajax(r.text)
             low = (res["html"] + " ".join(res["messages"])).lower()
             bad = [m for m in FORM_ERROR_MARKERS if m in low]
@@ -241,16 +246,10 @@ class Prober:
 
         exports = export_candidates(res["html"], page_url)
         out.append(f"export/download candidates: {len(exports)}")
+        # Listed, not fetched: the first probe's "Download Data in Excel." link
+        # returned "Cannot generate xls download.", and the AJAX HTML is complete.
         for u, t in exports[:10]:
             out.append(f"  {t!r} {u}")
-        for u, t in [(u, t) for u, t in exports if u.startswith("http")][:3]:
-            if not self.c._allowed(u):
-                out.append(f"  robots.txt disallows {u}")
-                continue
-            r = self.c._get(u)
-            name = f"{case.label}__export_{filename_from_response(u, r)}"
-            self._save(u, name, r, "probe-export", found_on=page_url)
-            out.append(f"  saved {name} ({len(r.content):,} bytes, {r.headers.get('content-type', '')})")
         self.summary += out + [""]
 
     # -- documents --
