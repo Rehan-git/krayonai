@@ -41,7 +41,32 @@ def main(argv: list[str] | None = None) -> int:
                    help="Seconds between requests (default 6; the form may reject faster submits)")
     p.add_argument("--refresh", action="store_true", help="Redo steps already cached")
 
+    r = sub.add_parser("fetch-results", help="Download raw results for every in-scope contest "
+                                              "(about 3 requests per contest) plus QA documents.")
+    r.add_argument("--election", action="append", choices=["2026g", "2024g"],
+                   help="Repeatable. Default: both.")
+    r.add_argument("--out", default="data/raw")
+    r.add_argument("--delay", type=float, default=6.0, help="Seconds between requests (default 6)")
+    r.add_argument("--refresh", action="store_true",
+                   help="Re-download even if cached (e.g. when counts are updated or certified)")
+
     args = ap.parse_args(argv)
+    if args.cmd == "fetch-results":
+        from .fetch_results import ResultsFetcher
+        crawler = Crawler(out_dir=Path(args.out), delay=args.delay, refresh=args.refresh)
+        fetcher = ResultsFetcher(crawler, args.election or ["2026g", "2024g"])
+        try:
+            paths = fetcher.run()
+        except BlockedError as e:
+            print(f"\nBLOCKED: {e}", file=sys.stderr)
+            return 2
+        print("\nSummaries: " + ", ".join(str(p) for p in paths))
+        if fetcher.failed:
+            print(f"FAILED ({len(fetcher.failed)}): {', '.join(fetcher.failed)}. "
+                  "Rerun the same command to retry only these.", file=sys.stderr)
+            return 1
+        print(f"All done. Commit and push {args.out}/.")
+        return 0
     if args.cmd == "probe":
         from .probe import Prober
         crawler = Crawler(out_dir=Path(args.out), delay=args.delay, refresh=args.refresh)

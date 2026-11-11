@@ -167,14 +167,14 @@ class Crawler:
         self.manifest_path = self.out_dir / "manifest.csv"
         self.manifest: dict[str, dict] = self._load_manifest()
         self._last_request = 0.0
-        self._robots: urllib.robotparser.RobotFileParser | None = None
+        self._robots: dict[str, urllib.robotparser.RobotFileParser] = {}
         self.host = urlparse(self.start_urls[0]).netloc
 
     # ---------- HTTP ----------
     def _get(self, url: str) -> requests.Response:
         return self._request("GET", url)
 
-    def _request(self, method: str, url: str, **kw) -> requests.Response:
+    def _request(self, method: str, url: str, check_block: bool = True, **kw) -> requests.Response:
         wait = self._last_request + self.delay - time.monotonic()
         if wait > 0:
             time.sleep(wait)
@@ -186,7 +186,7 @@ class Crawler:
             time.sleep(RETRY_WAIT)
             self._last_request = time.monotonic()
             resp = self.session.request(method, url, timeout=60, allow_redirects=True, **kw)
-        if looks_blocked(resp.status_code, {k.lower(): v for k, v in resp.headers.items()}, resp.content):
+        if check_block and looks_blocked(resp.status_code, {k.lower(): v for k, v in resp.headers.items()}, resp.content):
             raise BlockedError(
                 f"HTTP {resp.status_code} from {url} looks like a block/challenge/rate-limit. "
                 "Stopping without retrying. Open the URL in a browser to see the page."
@@ -194,15 +194,21 @@ class Crawler:
         return resp
 
     def _allowed(self, url: str) -> bool:
+        """robots.txt check, fetched once per host (the schedule PDFs live on a blob host)."""
         if not self.respect_robots:
             return True
-        if self._robots is None:
-            robots_url = f"{urlparse(url).scheme}://{self.host}/robots.txt"
+        parsed = urlparse(url)
+        rp = self._robots.get(parsed.netloc)
+        if rp is None:
             rp = urllib.robotparser.RobotFileParser()
-            resp = self._get(robots_url)
-            rp.parse(resp.text.splitlines() if resp.ok else [])
-            self._robots = rp
-        return self._robots.can_fetch(self.session.headers["User-Agent"], url)
+            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+            # No block detection here: a storage host may answer a missing robots.txt with 400/403.
+            # The primary host's block still surfaces on the first real page request.
+            resp = self._request("GET", robots_url, check_block=False)
+            # Missing robots.txt (404) means no restrictions; parse([]) allows everything.
+            rp.parse(resp.text.splitlines() if resp.status_code == 200 else [])
+            self._robots[parsed.netloc] = rp
+        return rp.can_fetch(self.session.headers["User-Agent"], url)
 
     # ---------- manifest ----------
     def _load_manifest(self) -> dict[str, dict]:

@@ -47,6 +47,31 @@ Output goes to `data/raw/_discovery/probe/`, and `probe_summary.md` there
 describes what came back. Reruns skip completed steps (`--refresh` redoes
 them). Commit and push `data/raw/_discovery/`.
 
+## Phase 2: download raw results
+
+```bash
+python -m etl fetch-results
+```
+
+For all 35 contests in `etl/races.py` (2026g: turnout, Governor, SOS,
+School Board President, 20 subdistricts; 2024g: turnout, 10 districts):
+
+- Loads the election page and checks the contest's label matches the race
+  map exactly. A mismatch is refused, and nothing is saved under that race_id.
+- Submits the form with ward = ALL (every precinct, one table per ward) and
+  saves the raw response as `data/raw/{election_id}/{race_id}.json`
+  (turnout: `turnout.json`).
+- Saves the 2024 proclamation PDF and the 2026 school board precinct
+  schedule PDF next to them.
+- Writes `data/raw/{election_id}/fetch_summary.md` (wards, precinct rows,
+  candidate columns per contest) and adds each file to `data/raw/manifest.csv`.
+
+About 3 requests per contest, 6s apart: roughly 11 minutes in total.
+Options: `--election 2026g` (repeatable), `--refresh` to re-download, e.g.
+when counts are updated or certified. A failed contest doesn't stop the
+others; rerun the same command to retry only the failed ones (exit code 1
+until all succeed; 2 if blocked). Then commit and push `data/raw/`.
+
 ## Tests
 
 ```bash

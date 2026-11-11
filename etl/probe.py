@@ -127,6 +127,41 @@ def export_candidates(html: str, page_url: str) -> list[tuple[str, str]]:
     return links + buttons
 
 
+def ajax_post(c, page_url: str, fields: dict, state: dict, trigger: str, trigger_value: str | None = None):
+    """POST one Drupal AJAX step the way the browser's ajax.js does."""
+    data = dict(fields)
+    data.update({"_triggering_element_name": trigger, "_drupal_ajax": "1",
+                 "ajax_page_state[theme]": state.get("theme") or "",
+                 "ajax_page_state[theme_token]": state.get("theme_token") or "",
+                 "ajax_page_state[libraries]": state.get("libraries") or ""})
+    if trigger_value is not None:
+        data["_triggering_element_value"] = trigger_value
+    return c._request("POST", f"{page_url}?ajax_form=1", data=data, headers={
+        "X-Requested-With": "XMLHttpRequest", "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Referer": page_url, "Origin": BASE_URL})
+
+
+def form_errors(res: dict) -> list[str]:
+    low = (res["html"] + " ".join(res["messages"])).lower()
+    return [m for m in FORM_ERROR_MARKERS if m in low]
+
+
+def apply_ajax(fields: dict, form: dict, res: dict) -> None:
+    """Carry the new build id and any rebuilt inputs/selects into the next step."""
+    if res["build_id"]:
+        fields["form_build_id"] = res["build_id"]
+    if res["html"]:
+        # Rebuilt form or just a wrapper fragment: read whatever inputs/selects came back.
+        try:
+            newer = parse_form(res["html"])
+        except ProbeError:
+            newer = parse_form(f'<form id="election-results-form">{res["html"]}</form>')
+        for k, v in newer["fields"].items():
+            if k in ("form_build_id", "form_id", "election_id", "homepage") or k not in fields:
+                fields[k] = v
+        form["selects"].update(newer["selects"])
+
+
 # ---------- the probe ----------
 
 class Prober:
@@ -178,41 +213,18 @@ class Prober:
         out.append(f"contest label: {contests[case.contest]!r}")
 
         def ajax(step: str, trigger: str, trigger_value: str | None = None) -> dict:
-            data = {k: v for k, v in fields.items()}
-            data.update({"_triggering_element_name": trigger, "_drupal_ajax": "1",
-                         "ajax_page_state[theme]": state.get("theme", ""),
-                         "ajax_page_state[theme_token]": state.get("theme_token", ""),
-                         "ajax_page_state[libraries]": state.get("libraries", "")})
-            if trigger_value is not None:
-                data["_triggering_element_value"] = trigger_value
             self.log(f"[probe] {case.label}: POST {step}")
-            r = self.c._request("POST", ajax_url, data=data, headers={
-                "X-Requested-With": "XMLHttpRequest", "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Referer": page_url, "Origin": BASE_URL})
+            r = ajax_post(self.c, page_url, fields, state, trigger, trigger_value)
             if not r.ok:
                 raise ProbeError(f"{step} POST returned HTTP {r.status_code} (cf-ray {r.headers.get('cf-ray', '?')})")
             n = {"contest": 1, "ward": 2, "submit": 3}[step]
             self._save(f"{ajax_url}#{case.label}/{step}", f"{case.label}__{n}_{step}.json", r, "probe-ajax",
                        found_on=page_url)
             res = parse_ajax(r.text)
-            low = (res["html"] + " ".join(res["messages"])).lower()
-            bad = [m for m in FORM_ERROR_MARKERS if m in low]
+            bad = form_errors(res)
             out.append(f"- {step}: HTTP {r.status_code}, commands {res['commands']}"
                        + (f", FORM ERROR markers {bad}" if bad else ""))
-            if res["build_id"]:
-                fields["form_build_id"] = res["build_id"]
-            if res["html"]:
-                # Rebuilt form or just a wrapper fragment: read whatever inputs/selects came back.
-                frag = res["html"] if "election-results-form" in res["html"] else (
-                    f'<form id="election-results-form">{res["html"]}</form>')
-                try:
-                    newer = parse_form(frag)
-                except ProbeError:
-                    newer = parse_form(f'<form id="election-results-form">{res["html"]}</form>')
-                for k, v in newer["fields"].items():
-                    if k in ("form_build_id", "form_id", "election_id", "homepage") or k not in fields:
-                        fields[k] = v
-                form["selects"].update(newer["selects"])
+            apply_ajax(fields, form, res)
             return res
 
         fields["contest"] = case.contest
